@@ -267,11 +267,16 @@ function Library:CreateWindow(config)
 		gradient(Color3.fromRGB(19, 62, 58), Color3.fromRGB(21, 32, 46), 90),
 	})
 
-	local rail = create("Frame", {
+	local rail = create("ScrollingFrame", {
 		Name = "Rail",
 		Position = UDim2.fromOffset(10, 12),
 		Size = UDim2.new(1, -20, 1, -24),
 		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = Theme.Accent,
+		CanvasSize = UDim2.new(),
+		ClipsDescendants = true,
 		Parent = sidebar,
 	})
 
@@ -1443,9 +1448,18 @@ function Library:CreateWindow(config)
 		end
 	end)
 
-	navLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-		rail.Size = UDim2.new(1, -20, 1, -24)
-	end)
+	local function updateNavCanvas()
+		local contentHeight = navLayout.AbsoluteContentSize.Y
+		rail.CanvasSize = UDim2.fromOffset(0, contentHeight)
+
+		task.defer(function()
+			rail.ScrollBarThickness = contentHeight > rail.AbsoluteSize.Y and 3 or 0
+		end)
+	end
+
+	navLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateNavCanvas)
+	rail:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateNavCanvas)
+	task.defer(updateNavCanvas)
 
 	task.spawn(function()
 		while gui.Parent do
