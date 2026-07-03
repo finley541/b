@@ -3,6 +3,7 @@ local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
 
 local Player = Players.LocalPlayer
 
@@ -167,8 +168,67 @@ local function makeElementHolder(parent, height)
 	})
 end
 
+local function hasFileSystem()
+	return typeof(isfolder) == "function"
+		and typeof(makefolder) == "function"
+		and typeof(writefile) == "function"
+		and typeof(readfile) == "function"
+		and typeof(isfile) == "function"
+		and typeof(listfiles) == "function"
+end
+
+local function ensureFolder(path)
+	if not isfolder(path) then
+		makefolder(path)
+	end
+end
+
+local function sanitizeFileName(name)
+	local cleaned = tostring(name or ""):gsub("[\\/:*?\"<>|]", "_"):gsub("^%s+", ""):gsub("%s+$", "")
+
+	if cleaned == "" then
+		return nil
+	end
+
+	return cleaned
+end
+
+local function fileNameFromPath(path)
+	local name = tostring(path):match("[^/\\]+$") or tostring(path)
+	return name:gsub("%.json$", "")
+end
+
+local function encodeConfigValue(value)
+	if typeof(value) == "Color3" then
+		return {
+			__type = "Color3",
+			R = math.floor((value.R * 255) + 0.5),
+			G = math.floor((value.G * 255) + 0.5),
+			B = math.floor((value.B * 255) + 0.5),
+		}
+	end
+
+	return value
+end
+
+local function decodeConfigValue(value)
+	if typeof(value) == "table" and value.__type == "Color3" then
+		return Color3.fromRGB(tonumber(value.R) or 255, tonumber(value.G) or 255, tonumber(value.B) or 255)
+	end
+
+	return value
+end
+
 function Library:CreateWindow(config)
 	config = config or {}
+
+	local configsEnabled = config.Configs == true
+	local configFolderName = sanitizeFileName(config.FolderName or config.ConfigFolder or config.ConfigsFolder)
+	local configDirectory = configFolderName and ("Lunex/" .. configFolderName) or nil
+
+	if configsEnabled and not configFolderName then
+		error("Lunex configs require a folder name. Use FolderName, ConfigFolder, or ConfigsFolder when Configs is true.", 2)
+	end
 
 	local gui = create("ScreenGui", {
 		Name = config.Name or "Lunex",
@@ -393,7 +453,26 @@ function Library:CreateWindow(config)
 		Tabs = {},
 		SelectedTab = nil,
 		Visible = true,
+		ConfigsEnabled = configsEnabled,
+		ConfigFolder = configDirectory,
+		ConfigElements = {},
 	}
+
+	local function registerConfigElement(options, element, valueKey)
+		if not configsEnabled or not options or options.IgnoreConfig then
+			return
+		end
+
+		local flag = options.Flag or options.Name
+		if not flag then
+			return
+		end
+
+		window.ConfigElements[tostring(flag)] = {
+			Element = element,
+			ValueKey = valueKey,
+		}
+	end
 
 	local function selectTab(tab)
 		for _, other in ipairs(window.Tabs) do
@@ -753,6 +832,7 @@ function Library:CreateWindow(config)
 			end)
 
 			render()
+			registerConfigElement(options, element, "CurrentValue")
 			return element
 		end
 
@@ -860,6 +940,7 @@ function Library:CreateWindow(config)
 			end)
 
 			element:Set(element.CurrentValue)
+			registerConfigElement(options, element, "CurrentValue")
 			return element
 		end
 
@@ -894,6 +975,7 @@ function Library:CreateWindow(config)
 
 			local element = {
 				Instance = holder,
+				TextBox = box,
 				CurrentValue = tostring(options.CurrentValue or ""),
 			}
 
@@ -917,6 +999,7 @@ function Library:CreateWindow(config)
 				end
 			end)
 
+			registerConfigElement(options, element, "CurrentValue")
 			return element
 		end
 
@@ -1034,44 +1117,70 @@ function Library:CreateWindow(config)
 				safeCallback(options.Callback, self.CurrentOption)
 			end
 
-			for _, option in ipairs(optionList) do
-				local optionButton = create("TextButton", {
-					Size = UDim2.new(1, 0, 0, 26),
-					BackgroundColor3 = Color3.fromRGB(27, 35, 48),
-					BorderSizePixel = 0,
-					Text = tostring(option),
-					TextColor3 = Theme.Muted,
-					TextSize = 12,
-					Font = Enum.Font.GothamBold,
-					AutoButtonColor = false,
-					Parent = list,
-				}, {
-					corner(7),
-				})
+			local function buildOptions()
+				for _, optionButton in ipairs(optionButtons) do
+					optionButton.Button:Destroy()
+				end
 
-				local record = {
-					Button = optionButton,
-					Option = option,
-				}
+				for index = #optionButtons, 1, -1 do
+					optionButtons[index] = nil
+				end
 
-				table.insert(optionButtons, record)
+				for _, option in ipairs(optionList) do
+					local optionButton = create("TextButton", {
+						Size = UDim2.new(1, 0, 0, 26),
+						BackgroundColor3 = Color3.fromRGB(27, 35, 48),
+						BorderSizePixel = 0,
+						Text = tostring(option),
+						TextColor3 = Theme.Muted,
+						TextSize = 12,
+						Font = Enum.Font.GothamBold,
+						AutoButtonColor = false,
+						Parent = list,
+					}, {
+						corner(7),
+					})
 
-				optionButton.MouseButton1Click:Connect(function()
-					if multiple then
-						if contains(option) then
-							remove(option)
+					local record = {
+						Button = optionButton,
+						Option = option,
+					}
+
+					table.insert(optionButtons, record)
+
+					optionButton.MouseButton1Click:Connect(function()
+						if multiple then
+							if contains(option) then
+								remove(option)
+							else
+								table.insert(element.CurrentOption, option)
+							end
 						else
-							table.insert(element.CurrentOption, option)
+							element.CurrentOption = { option }
+							open = false
+							resize()
 						end
-					else
-						element.CurrentOption = { option }
-						open = false
-						resize()
-					end
 
-					renderOptions()
-					safeCallback(options.Callback, element.CurrentOption)
-				end)
+						renderOptions()
+						safeCallback(options.Callback, element.CurrentOption)
+					end)
+				end
+			end
+
+			function element:Refresh(newOptions, keepSelection)
+				optionList = newOptions or {}
+
+				if not keepSelection then
+					self.CurrentOption = {}
+				end
+
+				buildOptions()
+				renderOptions()
+				resize()
+			end
+
+			function element:SetOptions(newOptions, keepSelection)
+				self:Refresh(newOptions, keepSelection)
 			end
 
 			top.MouseButton1Click:Connect(function()
@@ -1079,8 +1188,10 @@ function Library:CreateWindow(config)
 				resize()
 			end)
 
+			buildOptions()
 			renderOptions()
 			resize()
+			registerConfigElement(options, element, "CurrentOption")
 			return element
 		end
 
@@ -1219,6 +1330,7 @@ function Library:CreateWindow(config)
 			makeChannel("B", 114, "B")
 
 			element:Set(element.CurrentValue)
+			registerConfigElement(options, element, "CurrentValue")
 			return element
 		end
 
@@ -1323,6 +1435,183 @@ function Library:CreateWindow(config)
 		end
 
 		return tab
+	end
+
+	function window:GetConfigs()
+		local configs = {}
+
+		if not configsEnabled or not hasFileSystem() then
+			return configs
+		end
+
+		ensureFolder("Lunex")
+		ensureFolder(configDirectory)
+
+		for _, filePath in ipairs(listfiles(configDirectory)) do
+			if tostring(filePath):match("%.json$") then
+				table.insert(configs, fileNameFromPath(filePath))
+			end
+		end
+
+		table.sort(configs)
+		return configs
+	end
+
+	function window:SaveConfig(name)
+		if not configsEnabled then
+			return false, "Configs are not enabled for this window."
+		end
+
+		if not hasFileSystem() then
+			return false, "This environment does not support file configs."
+		end
+
+		local configName = sanitizeFileName(name)
+		if not configName then
+			return false, "Enter a config name first."
+		end
+
+		ensureFolder("Lunex")
+		ensureFolder(configDirectory)
+
+		local data = {}
+		for flag, record in pairs(self.ConfigElements) do
+			data[flag] = encodeConfigValue(record.Element[record.ValueKey])
+		end
+
+		local success, encoded = pcall(function()
+			return HttpService:JSONEncode(data)
+		end)
+
+		if not success then
+			return false, "Failed to encode config."
+		end
+
+		writefile(configDirectory .. "/" .. configName .. ".json", encoded)
+		return true, configName
+	end
+
+	function window:LoadConfig(name)
+		if not configsEnabled then
+			return false, "Configs are not enabled for this window."
+		end
+
+		if not hasFileSystem() then
+			return false, "This environment does not support file configs."
+		end
+
+		local configName = sanitizeFileName(name)
+		if not configName then
+			return false, "Select a config first."
+		end
+
+		local path = configDirectory .. "/" .. configName .. ".json"
+		if not isfile(path) then
+			return false, "That config does not exist."
+		end
+
+		local success, data = pcall(function()
+			return HttpService:JSONDecode(readfile(path))
+		end)
+
+		if not success or typeof(data) ~= "table" then
+			return false, "Failed to read config."
+		end
+
+		for flag, value in pairs(data) do
+			local record = self.ConfigElements[flag]
+			if record and record.Element and typeof(record.Element.Set) == "function" then
+				record.Element:Set(decodeConfigValue(value))
+			end
+		end
+
+		return true, configName
+	end
+
+	function window:CreateConfigTab()
+		if not configsEnabled or self.ConfigTab then
+			return
+		end
+
+		local tab = self:CreateTab({
+			Name = "Settings",
+			Description = "Save and load Lunex configs.",
+		})
+
+		self.ConfigTab = tab
+
+		local card = tab:CreateCard({
+			Title = "Configs",
+			Description = configFolderName,
+			MinHeight = 260,
+		})
+
+		local selectedConfig
+		local nameInput = card:CreateInput({
+			Name = "New Config Name",
+			PlaceholderText = "Config name",
+			IgnoreConfig = true,
+		})
+
+		local configDropdown
+		local function refreshConfigs(keepSelection)
+			if configDropdown then
+				configDropdown:Refresh(self:GetConfigs(), keepSelection)
+			end
+		end
+
+		card:CreateButton({
+			Name = "Save Config",
+			Callback = function()
+				local success, result = self:SaveConfig(nameInput.TextBox and nameInput.TextBox.Text or nameInput.CurrentValue)
+				self:Notify({
+					Title = success and "Config Saved" or "Config Error",
+					Text = success and ("Saved " .. result .. ".") or result,
+				})
+
+				if success then
+					refreshConfigs(true)
+					configDropdown:Set(result)
+					selectedConfig = result
+				end
+			end,
+		})
+
+		configDropdown = card:CreateDropdown({
+			Name = "Existing Configs",
+			Options = self:GetConfigs(),
+			IgnoreConfig = true,
+			Callback = function(selection)
+				selectedConfig = selection and selection[1] or nil
+			end,
+		})
+
+		card:CreateButton({
+			Name = "Load Selected Config",
+			Callback = function()
+				local success, result = self:LoadConfig(selectedConfig)
+				self:Notify({
+					Title = success and "Config Loaded" or "Config Error",
+					Text = success and ("Loaded " .. result .. ".") or result,
+				})
+			end,
+		})
+
+		card:CreateButton({
+			Name = "Overwrite Selected Config",
+			Callback = function()
+				local success, result = self:SaveConfig(selectedConfig)
+				self:Notify({
+					Title = success and "Config Saved" or "Config Error",
+					Text = success and ("Overwrote " .. result .. ".") or result,
+				})
+
+				if success then
+					refreshConfigs(true)
+					configDropdown:Set(result)
+				end
+			end,
+		})
 	end
 
 	function window:SelectTab(name)
@@ -1460,6 +1749,14 @@ function Library:CreateWindow(config)
 	navLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateNavCanvas)
 	rail:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateNavCanvas)
 	task.defer(updateNavCanvas)
+
+	if configsEnabled then
+		task.defer(function()
+			if gui.Parent then
+				window:CreateConfigTab()
+			end
+		end)
+	end
 
 	task.spawn(function()
 		while gui.Parent do
