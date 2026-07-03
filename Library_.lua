@@ -177,6 +177,14 @@ local function hasFileSystem()
 		and typeof(listfiles) == "function"
 end
 
+local function getDeleteFile()
+	if typeof(delfile) == "function" then
+		return delfile
+	elseif typeof(deletefile) == "function" then
+		return deletefile
+	end
+end
+
 local function ensureFolder(path)
 	if not isfolder(path) then
 		makefolder(path)
@@ -1528,6 +1536,41 @@ function Library:CreateWindow(config)
 		return true, configName
 	end
 
+	function window:DeleteConfig(name)
+		if not configsEnabled then
+			return false, "Configs are not enabled for this window."
+		end
+
+		if not hasFileSystem() then
+			return false, "This environment does not support file configs."
+		end
+
+		local deleteFile = getDeleteFile()
+		if not deleteFile then
+			return false, "This environment does not support deleting configs."
+		end
+
+		local configName = sanitizeFileName(name)
+		if not configName then
+			return false, "Select a config first."
+		end
+
+		local path = configDirectory .. "/" .. configName .. ".json"
+		if not isfile(path) then
+			return false, "That config does not exist."
+		end
+
+		local success = pcall(function()
+			deleteFile(path)
+		end)
+
+		if not success then
+			return false, "Failed to delete config."
+		end
+
+		return true, configName
+	end
+
 	function window:CreateConfigTab()
 		if not configsEnabled or self.ConfigTab then
 			return
@@ -1613,6 +1656,22 @@ function Library:CreateWindow(config)
 					if configDropdown and typeof(configDropdown.Set) == "function" then
 						configDropdown:Set(result)
 					end
+				end
+			end,
+		})
+
+		card:CreateButton({
+			Name = "Delete Selected Config",
+			Callback = function()
+				local success, result = self:DeleteConfig(selectedConfig)
+				self:Notify({
+					Title = success and "Config Deleted" or "Config Error",
+					Text = success and ("Deleted " .. result .. ".") or result,
+				})
+
+				if success then
+					selectedConfig = nil
+					refreshConfigs(false)
 				end
 			end,
 		})
