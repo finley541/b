@@ -611,8 +611,8 @@ function Library:CreateWindow(config)
 		local cardChildren = {}
 
 		if not raw then
-			table.insert(cardChildren, corner(9))
-			table.insert(cardChildren, stroke(Theme.Stroke, 0.72))
+			cardChildren[#cardChildren + 1] = corner(9)
+			cardChildren[#cardChildren + 1] = stroke(Theme.Stroke, 0.72)
 		end
 
 		local card = create("Frame", {
@@ -1146,14 +1146,14 @@ function Library:CreateWindow(config)
 						Option = option,
 					}
 
-					table.insert(optionButtons, record)
+					optionButtons[#optionButtons + 1] = record
 
 					optionButton.MouseButton1Click:Connect(function()
 						if multiple then
 							if contains(option) then
 								remove(option)
 							else
-								table.insert(element.CurrentOption, option)
+								element.CurrentOption[#element.CurrentOption + 1] = option
 							end
 						else
 							element.CurrentOption = { option }
@@ -1428,7 +1428,7 @@ function Library:CreateWindow(config)
 			return raw:CreateColorPicker(options)
 		end
 
-		table.insert(window.Tabs, tab)
+		window.Tabs[#window.Tabs + 1] = tab
 
 		if not window.SelectedTab then
 			selectTab(tab)
@@ -1449,7 +1449,7 @@ function Library:CreateWindow(config)
 
 		for _, filePath in ipairs(listfiles(configDirectory)) do
 			if tostring(filePath):match("%.json$") then
-				table.insert(configs, fileNameFromPath(filePath))
+				configs[#configs + 1] = fileNameFromPath(filePath)
 			end
 		end
 
@@ -1571,7 +1571,9 @@ function Library:CreateWindow(config)
 
 				if success then
 					refreshConfigs(true)
-					configDropdown:Set(result)
+					if configDropdown and typeof(configDropdown.Set) == "function" then
+						configDropdown:Set(result)
+					end
 					selectedConfig = result
 				end
 			end,
@@ -1608,7 +1610,9 @@ function Library:CreateWindow(config)
 
 				if success then
 					refreshConfigs(true)
-					configDropdown:Set(result)
+					if configDropdown and typeof(configDropdown.Set) == "function" then
+						configDropdown:Set(result)
+					end
 				end
 			end,
 		})
