@@ -1178,7 +1178,7 @@ function Library:CreateWindow(config)
 			function element:Refresh(newOptions, keepSelection)
 				optionList = newOptions or {}
 
-				if not keepSelection then
+				if keepSelection == false then
 					self.CurrentOption = {}
 				end
 
