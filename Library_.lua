@@ -4,6 +4,7 @@ local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
+local ContextActionService = game:GetService("ContextActionService")
 
 local Player = Players.LocalPlayer
 
@@ -227,6 +228,89 @@ local function decodeConfigValue(value)
 	return value
 end
 
+local function normalizeKeyCode(value)
+	if typeof(value) == "table" then
+		value = value.Key or value.Default or value.CurrentKeybind
+	end
+
+	if typeof(value) == "EnumItem" and value.EnumType == Enum.KeyCode then
+		return value
+	end
+
+	if typeof(value) == "string" and value ~= "" then
+		local success, keyCode = pcall(function()
+			return Enum.KeyCode[value]
+		end)
+		if success and keyCode then
+			return keyCode
+		end
+	end
+
+	return nil
+end
+
+local function encodeKeyCode(value)
+	local keyCode = normalizeKeyCode(value)
+	return keyCode and keyCode.Name or nil
+end
+
+local function makeDisabledState(holder, element)
+	local overlay = create("TextButton", {
+		Name = "DisabledOverlay",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.fromRGB(8, 11, 16),
+		BackgroundTransparency = 0.28,
+		BorderSizePixel = 0,
+		Text = "Element Disabled",
+		TextColor3 = Theme.Muted,
+		TextSize = 12,
+		Font = Enum.Font.GothamBold,
+		AutoButtonColor = false,
+		Visible = false,
+		ZIndex = 20,
+		Parent = holder,
+	}, { corner(8) })
+
+	local tooltip = label("", 11, Theme.Text, false)
+	tooltip.Name = "DisabledReason"
+	tooltip.AnchorPoint = Vector2.new(0.5, 0.5)
+	tooltip.Position = UDim2.fromScale(0.5, 0.5)
+	tooltip.Size = UDim2.new(1, -12, 0, 28)
+	tooltip.BackgroundColor3 = Theme.Background
+	tooltip.BackgroundTransparency = 0.04
+	tooltip.TextXAlignment = Enum.TextXAlignment.Center
+	tooltip.TextWrapped = true
+	tooltip.Visible = false
+	tooltip.ZIndex = 21
+	tooltip.Parent = overlay
+	corner(6).Parent = tooltip
+
+	overlay.MouseEnter:Connect(function()
+		if element.DisabledReason then
+			tooltip.Text = element.DisabledReason
+			tooltip.Visible = true
+		end
+	end)
+	overlay.MouseLeave:Connect(function()
+		tooltip.Visible = false
+	end)
+
+	function element:Disable(reason)
+		self.Disabled = true
+		self.DisabledReason = reason and tostring(reason) or nil
+		overlay.Visible = true
+	end
+
+	function element:Enable()
+		self.Disabled = false
+		self.DisabledReason = nil
+		overlay.Visible = false
+		tooltip.Visible = false
+	end
+
+	return overlay
+end
+
 function Library:CreateWindow(config)
 	config = config or {}
 
@@ -246,6 +330,7 @@ function Library:CreateWindow(config)
 		DisplayOrder = config.DisplayOrder or 999999,
 		Parent = getParent(config),
 	})
+	local keybindEscapeAction = "LunexKeybindEscape_" .. tostring(gui)
 
 	local root = create("Frame", {
 		Name = "Root",
@@ -464,7 +549,79 @@ function Library:CreateWindow(config)
 		ConfigsEnabled = configsEnabled,
 		ConfigFolder = configDirectory,
 		ConfigElements = {},
+		KeybindElements = {},
 	}
+
+	local pendingKeybind
+
+	local function makeKeybind(element, options, parent, flag)
+		local defaultKeybind = options.Keybind or options.DefaultKeybind or options.CurrentKeybind
+		local keybindEnabled = options.KeybindEnabled == true or defaultKeybind ~= nil
+		if not keybindEnabled then
+			return
+		end
+
+		local keybindBox = create("TextButton", {
+			Name = "Keybind",
+			Size = UDim2.fromOffset(74, 24),
+			Position = UDim2.new(1, -84, 0.5, -12),
+			BackgroundColor3 = Theme.SurfaceSoft,
+			BorderSizePixel = 0,
+			TextColor3 = Theme.Muted,
+			TextSize = 11,
+			Font = Enum.Font.GothamBold,
+			AutoButtonColor = false,
+			ZIndex = 5,
+			Parent = parent,
+		}, { corner(6), stroke(Theme.Stroke, 0.58) })
+
+		local keyCode = normalizeKeyCode(defaultKeybind)
+		element.CurrentKeybind = keyCode
+		element.Keybind = keyCode
+		element.KeybindBox = keybindBox
+		window.KeybindElements[#window.KeybindElements + 1] = element
+
+		local function renderKeybind()
+			keybindBox.Text = pendingKeybind == element and "Press key..." or (element.CurrentKeybind and element.CurrentKeybind.Name or "None")
+		end
+
+		function element:SetKeybind(value)
+			self.CurrentKeybind = normalizeKeyCode(value)
+			self.Keybind = self.CurrentKeybind
+			renderKeybind()
+		end
+
+		keybindBox.MouseButton1Click:Connect(function()
+			if element.Disabled then
+				return
+			end
+			pendingKeybind = element
+			renderKeybind()
+
+			ContextActionService:BindActionAtPriority(keybindEscapeAction, function(_, state)
+				if state == Enum.UserInputState.Begin and pendingKeybind then
+					local capturedElement = pendingKeybind
+					pendingKeybind = nil
+					capturedElement:SetKeybind(nil)
+					ContextActionService:UnbindAction(keybindEscapeAction)
+					return Enum.ContextActionResult.Sink
+				end
+
+				return Enum.ContextActionResult.Pass
+			end, false, 3000, Enum.KeyCode.Escape)
+		end)
+
+		element.RenderKeybind = renderKeybind
+		renderKeybind()
+
+		if flag and configsEnabled and not options.IgnoreConfig then
+			window.ConfigElements[tostring(flag) .. "__Keybind"] = {
+				Element = element,
+				ValueKey = "CurrentKeybind",
+				Keybind = true,
+			}
+		end
+	end
 
 	local function registerConfigElement(options, element, valueKey)
 		if not configsEnabled or not options or options.IgnoreConfig then
@@ -750,6 +907,7 @@ function Library:CreateWindow(config)
 				BackgroundTransparency = 0.04,
 				BorderSizePixel = 0,
 				Text = options.Name or "Button",
+				TextXAlignment = (options.Keybind ~= nil or options.DefaultKeybind ~= nil or options.CurrentKeybind ~= nil or options.KeybindEnabled) and Enum.TextXAlignment.Left or Enum.TextXAlignment.Center,
 				TextColor3 = Theme.Text,
 				TextSize = 13,
 				Font = Enum.Font.GothamBold,
@@ -760,7 +918,21 @@ function Library:CreateWindow(config)
 				stroke(Theme.Stroke, 0.76),
 			})
 
+			local element = {
+				Instance = button,
+				Callback = options.Callback,
+			}
+			if options.Keybind ~= nil or options.DefaultKeybind ~= nil or options.CurrentKeybind ~= nil or options.KeybindEnabled then
+				create("UIPadding", {
+					PaddingLeft = UDim.new(0, 12),
+					Parent = button,
+				})
+			end
+			makeDisabledState(button, element)
+			makeKeybind(element, options, button, options.Flag or options.Name)
+
 			button.MouseEnter:Connect(function()
+				if element.Disabled then return end
 				tween(button, { BackgroundColor3 = Theme.ElementHover })
 			end)
 
@@ -769,10 +941,13 @@ function Library:CreateWindow(config)
 			end)
 
 			button.MouseButton1Click:Connect(function()
+				if element.Disabled or pendingKeybind == element then
+					return
+				end
 				safeCallback(options.Callback)
 			end)
 
-			return button
+			return element
 		end
 
 		function cardObject:CreateToggle(options)
@@ -787,7 +962,7 @@ function Library:CreateWindow(config)
 
 			local switch = create("TextButton", {
 				Size = UDim2.fromOffset(44, 22),
-				Position = UDim2.new(1, -56, 0.5, -11),
+				Position = UDim2.new(1, (options.Keybind ~= nil or options.DefaultKeybind ~= nil or options.CurrentKeybind ~= nil or options.KeybindEnabled) and -146 or -56, 0.5, -11),
 				BackgroundColor3 = Color3.fromRGB(61, 70, 84),
 				BorderSizePixel = 0,
 				Text = "",
@@ -812,6 +987,8 @@ function Library:CreateWindow(config)
 				Instance = holder,
 				CurrentValue = options.CurrentValue and true or false,
 			}
+			makeDisabledState(holder, element)
+			makeKeybind(element, options, holder, options.Flag or options.Name)
 
 			local function render()
 				tween(switch, {
@@ -824,17 +1001,19 @@ function Library:CreateWindow(config)
 			end
 
 			function element:Set(value)
+				if self.Disabled then return end
 				self.CurrentValue = value and true or false
 				render()
 				safeCallback(options.Callback, self.CurrentValue)
 			end
 
 			switch.MouseButton1Click:Connect(function()
+				if element.Disabled then return end
 				element:Set(not element.CurrentValue)
 			end)
 
 			holder.InputBegan:Connect(function(input)
-				if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				if not element.Disabled and input.UserInputType == Enum.UserInputType.MouseButton1 then
 					element:Set(not element.CurrentValue)
 				end
 			end)
@@ -901,6 +1080,7 @@ function Library:CreateWindow(config)
 				Instance = holder,
 				CurrentValue = options.CurrentValue or min,
 			}
+			makeDisabledState(holder, element)
 
 			local function snap(value)
 				return math.clamp(math.floor((value / increment) + 0.5) * increment, min, max)
@@ -923,6 +1103,7 @@ function Library:CreateWindow(config)
 			end
 
 			function element:Set(value)
+				if self.Disabled then return end
 				self.CurrentValue = snap(tonumber(value) or min)
 				render()
 				safeCallback(options.Callback, self.CurrentValue)
@@ -986,8 +1167,10 @@ function Library:CreateWindow(config)
 				TextBox = box,
 				CurrentValue = tostring(options.CurrentValue or ""),
 			}
+			makeDisabledState(holder, element)
 
 			function element:Set(value)
+				if self.Disabled then return end
 				self.CurrentValue = tostring(value or "")
 				box.Text = self.CurrentValue
 				safeCallback(options.Callback, self.CurrentValue)
@@ -1065,6 +1248,7 @@ function Library:CreateWindow(config)
 				Instance = holder,
 				CurrentOption = options.CurrentOption or {},
 			}
+			makeDisabledState(holder, element)
 
 			if typeof(element.CurrentOption) ~= "table" then
 				element.CurrentOption = { element.CurrentOption }
@@ -1115,6 +1299,7 @@ function Library:CreateWindow(config)
 			end
 
 			function element:Set(value)
+				if self.Disabled then return end
 				if typeof(value) == "table" then
 					self.CurrentOption = value
 				else
@@ -1228,6 +1413,7 @@ function Library:CreateWindow(config)
 				Instance = holder,
 				CurrentValue = options.Color or options.CurrentValue or Color3.fromRGB(255, 255, 255),
 			}
+			makeDisabledState(holder, element)
 
 			local fills = {}
 			local values = {}
@@ -1311,6 +1497,7 @@ function Library:CreateWindow(config)
 			end
 
 			function element:Set(color)
+				if self.Disabled then return end
 				if typeof(color) ~= "Color3" then
 					color = Color3.fromRGB(255, 255, 255)
 				end
@@ -1484,7 +1671,11 @@ function Library:CreateWindow(config)
 
 		local data = {}
 		for flag, record in pairs(self.ConfigElements) do
-			data[flag] = encodeConfigValue(record.Element[record.ValueKey])
+			if record.Keybind then
+				data[flag] = encodeKeyCode(record.Element[record.ValueKey])
+			else
+				data[flag] = encodeConfigValue(record.Element[record.ValueKey])
+			end
 		end
 
 		local success, encoded = pcall(function()
@@ -1528,7 +1719,9 @@ function Library:CreateWindow(config)
 
 		for flag, value in pairs(data) do
 			local record = self.ConfigElements[flag]
-			if record and record.Element and typeof(record.Element.Set) == "function" then
+			if record and record.Keybind and record.Element and typeof(record.Element.SetKeybind) == "function" then
+				record.Element:SetKeybind(value)
+			elseif record and record.Element and typeof(record.Element.Set) == "function" then
 				record.Element:Set(decodeConfigValue(value))
 			end
 		end
@@ -1791,8 +1984,30 @@ function Library:CreateWindow(config)
 	end)
 
 	UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if pendingKeybind then
+			local element = pendingKeybind
+			pendingKeybind = nil
+			ContextActionService:UnbindAction(keybindEscapeAction)
+			if input.KeyCode == Enum.KeyCode.Escape then
+				element:SetKeybind(nil)
+			else
+				element:SetKeybind(input.KeyCode)
+			end
+			return
+		end
+
 		if gameProcessed then
 			return
+		end
+
+		for _, element in ipairs(window.KeybindElements) do
+			if not element.Disabled and element.CurrentKeybind == input.KeyCode then
+				if typeof(element.Set) == "function" then
+					element:Set(not element.CurrentValue)
+				elseif typeof(element.Callback) == "function" then
+					safeCallback(element.Callback)
+				end
+			end
 		end
 
 		if input.KeyCode == (config.ToggleKey or Enum.KeyCode.RightShift) then
