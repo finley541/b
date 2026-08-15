@@ -6,6 +6,11 @@ local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local ContextActionService = game:GetService("ContextActionService")
 
+local VirtualInputManager
+pcall(function()
+	VirtualInputManager = game:GetService("VirtualInputManager")
+end)
+
 local Player = Players.LocalPlayer
 
 local Library = {}
@@ -299,6 +304,7 @@ local function makeDisabledState(holder, element)
 		self.Disabled = true
 		self.DisabledReason = reason and tostring(reason) or nil
 		overlay.Visible = true
+		tooltip.Visible = false
 	end
 
 	function element:Enable()
@@ -309,6 +315,26 @@ local function makeDisabledState(holder, element)
 	end
 
 	return overlay
+end
+
+local function getMouseState()
+	local state = {
+		Behavior = UserInputService.MouseBehavior,
+		IconEnabled = UserInputService.MouseIconEnabled,
+		Location = UserInputService:GetMouseLocation(),
+	}
+
+	return state
+end
+
+local function restoreMouseLocation(location)
+	if not location or not VirtualInputManager then
+		return
+	end
+
+	pcall(function()
+		VirtualInputManager:SendMouseMoveEvent(location.X, location.Y, 0)
+	end)
 end
 
 function Library:CreateWindow(config)
@@ -550,9 +576,38 @@ function Library:CreateWindow(config)
 		ConfigFolder = configDirectory,
 		ConfigElements = {},
 		KeybindElements = {},
+		MouseState = nil,
 	}
 
 	local pendingKeybind
+
+	local function unlockMouse()
+		if window.MouseState or UserInputService.MouseBehavior == Enum.MouseBehavior.Default then
+			return
+		end
+
+		window.MouseState = getMouseState()
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	end
+
+	local function restoreMouse()
+		local state = window.MouseState
+		if not state then
+			return
+		end
+
+		-- Move first while the pointer is free; restoring a lock can immediately
+		-- clamp the pointer (for example, LockCenter in an FPS camera).
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+		UserInputService.MouseIconEnabled = state.IconEnabled
+		restoreMouseLocation(state.Location)
+		UserInputService.MouseBehavior = state.Behavior
+		window.MouseState = nil
+	end
+
+	-- A window is visible immediately after creation, so release an FPS-style
+	-- mouse lock before the first frame can process UI input.
+	unlockMouse()
 
 	local function makeKeybind(element, options, parent, flag)
 		local defaultKeybind = options.Keybind or options.DefaultKeybind or options.CurrentKeybind
@@ -736,7 +791,7 @@ function Library:CreateWindow(config)
 		buttonLabel.Parent = button
 
 		button.MouseEnter:Connect(function()
-			if window.SelectedTab ~= tab then
+			if not tab.Disabled and window.SelectedTab ~= tab then
 				tween(button, {
 					BackgroundTransparency = 0.25,
 				})
@@ -747,7 +802,7 @@ function Library:CreateWindow(config)
 		end)
 
 		button.MouseLeave:Connect(function()
-			if window.SelectedTab ~= tab then
+			if not tab.Disabled and window.SelectedTab ~= tab then
 				tween(button, {
 					BackgroundTransparency = 0.42,
 				})
@@ -758,8 +813,15 @@ function Library:CreateWindow(config)
 		end)
 
 		button.MouseButton1Click:Connect(function()
+			if tab.Disabled then
+				return
+			end
+
 			selectTab(tab)
 		end)
+
+		tab.Instance = button
+		makeDisabledState(button, tab)
 
 		return button, indicator, buttonLabel
 	end
@@ -1110,7 +1172,7 @@ function Library:CreateWindow(config)
 			end
 
 			bar.InputBegan:Connect(function(input)
-				if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				if not element.Disabled and input.UserInputType == Enum.UserInputType.MouseButton1 then
 					dragging = true
 					updateFromX(input.Position.X)
 				end
@@ -1177,10 +1239,17 @@ function Library:CreateWindow(config)
 			end
 
 			box.Focused:Connect(function()
+				if element.Disabled then
+					box:ReleaseFocus()
+					return
+				end
 				tween(box, { BackgroundColor3 = Color3.fromRGB(24, 32, 45) })
 			end)
 
 			box.FocusLost:Connect(function()
+				if element.Disabled then
+					return
+				end
 				tween(box, { BackgroundColor3 = Color3.fromRGB(18, 24, 34) })
 				element.CurrentValue = box.Text
 				safeCallback(options.Callback, element.CurrentValue)
@@ -1342,6 +1411,10 @@ function Library:CreateWindow(config)
 					optionButtons[#optionButtons + 1] = record
 
 					optionButton.MouseButton1Click:Connect(function()
+						if element.Disabled then
+							return
+						end
+
 						if multiple then
 							if contains(option) then
 								remove(option)
@@ -1377,6 +1450,10 @@ function Library:CreateWindow(config)
 			end
 
 			top.MouseButton1Click:Connect(function()
+				if element.Disabled then
+					return
+				end
+
 				open = not open
 				resize()
 			end)
@@ -1474,7 +1551,7 @@ function Library:CreateWindow(config)
 				end
 
 				bar.InputBegan:Connect(function(input)
-					if input.UserInputType == Enum.UserInputType.MouseButton1 then
+					if not element.Disabled and input.UserInputType == Enum.UserInputType.MouseButton1 then
 						dragging = true
 						updateFromX(input.Position.X)
 					end
@@ -1539,6 +1616,7 @@ function Library:CreateWindow(config)
 			Name = options.Name or "Tab",
 			Description = options.Description,
 			Icon = options.Icon,
+			Disabled = false,
 			Page = createPage(options.Name or "Tab"),
 		}
 
@@ -1872,7 +1950,7 @@ function Library:CreateWindow(config)
 
 	function window:SelectTab(name)
 		for _, tab in ipairs(self.Tabs) do
-			if tab.Name == name then
+			if tab.Name == name and not tab.Disabled then
 				selectTab(tab)
 				return tab
 			end
@@ -1881,6 +1959,12 @@ function Library:CreateWindow(config)
 
 	function window:Toggle()
 		self.Visible = not self.Visible
+
+		if self.Visible then
+			unlockMouse()
+		else
+			restoreMouse()
+		end
 
 		tween(root, {
 			Position = self.Visible and (config.Position or UDim2.fromScale(0.5, 0.5)) or UDim2.fromScale(0.5, 1.35),
@@ -1956,6 +2040,7 @@ function Library:CreateWindow(config)
 	end
 
 	function window:Destroy()
+		restoreMouse()
 		gui:Destroy()
 	end
 
