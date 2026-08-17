@@ -6,12 +6,52 @@ local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local ContextActionService = game:GetService("ContextActionService")
 
-local VirtualInputManager
-pcall(function()
-	VirtualInputManager = game:GetService("VirtualInputManager")
+local player = Players.LocalPlayer
+local unlocked = false
+local manageMouseLock = false
+
+local function forceUnlock()
+	if not unlocked then
+		return
+	end
+
+	player.DevEnableMouseLock = false
+	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	UserInputService.MouseIconEnabled = true
+end
+
+local function setMouseUnlocked(value)
+	if not manageMouseLock then
+		return
+	end
+
+	unlocked = value
+
+	if unlocked then
+		forceUnlock()
+	else
+		player.DevEnableMouseLock = true
+		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+	end
+end
+
+RunService:BindToRenderStep(
+	"HardForceMouseUnlock",
+	Enum.RenderPriority.Last.Value,
+	forceUnlock
+)
+
+UserInputService:GetPropertyChangedSignal("MouseBehavior"):Connect(function()
+	if unlocked and UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	end
 end)
 
-local Player = Players.LocalPlayer
+UserInputService:GetPropertyChangedSignal("MouseIconEnabled"):Connect(function()
+	if unlocked and not UserInputService.MouseIconEnabled then
+		UserInputService.MouseIconEnabled = true
+	end
+end)
 
 local Library = {}
 Library.__index = Library
@@ -317,28 +357,9 @@ local function makeDisabledState(holder, element)
 	return overlay
 end
 
-local function getMouseState()
-	local state = {
-		Behavior = UserInputService.MouseBehavior,
-		IconEnabled = UserInputService.MouseIconEnabled,
-		Location = UserInputService:GetMouseLocation(),
-	}
-
-	return state
-end
-
-local function restoreMouseLocation(location)
-	if not location or not VirtualInputManager then
-		return
-	end
-
-	pcall(function()
-		VirtualInputManager:SendMouseMoveEvent(location.X, location.Y, 0)
-	end)
-end
-
 function Library:CreateWindow(config)
 	config = config or {}
+	manageMouseLock = UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default
 
 	local configsEnabled = config.Configs == true
 	local configFolderName = sanitizeFileName(config.FolderName or config.ConfigFolder or config.ConfigsFolder)
@@ -576,38 +597,10 @@ function Library:CreateWindow(config)
 		ConfigFolder = configDirectory,
 		ConfigElements = {},
 		KeybindElements = {},
-		MouseState = nil,
 	}
 
 	local pendingKeybind
-
-	local function unlockMouse()
-		if window.MouseState or UserInputService.MouseBehavior == Enum.MouseBehavior.Default then
-			return
-		end
-
-		window.MouseState = getMouseState()
-		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-	end
-
-	local function restoreMouse()
-		local state = window.MouseState
-		if not state then
-			return
-		end
-
-		-- Move first while the pointer is free; restoring a lock can immediately
-		-- clamp the pointer (for example, LockCenter in an FPS camera).
-		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-		UserInputService.MouseIconEnabled = state.IconEnabled
-		restoreMouseLocation(state.Location)
-		UserInputService.MouseBehavior = state.Behavior
-		window.MouseState = nil
-	end
-
-	-- A window is visible immediately after creation, so release an FPS-style
-	-- mouse lock before the first frame can process UI input.
-	unlockMouse()
+	setMouseUnlocked(true)
 
 	local function makeKeybind(element, options, parent, flag)
 		local defaultKeybind = options.Keybind or options.DefaultKeybind or options.CurrentKeybind
@@ -1959,12 +1952,10 @@ function Library:CreateWindow(config)
 
 	function window:Toggle()
 		self.Visible = not self.Visible
-
 		if self.Visible then
-			unlockMouse()
-		else
-			restoreMouse()
+			manageMouseLock = UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default
 		end
+		setMouseUnlocked(self.Visible)
 
 		tween(root, {
 			Position = self.Visible and (config.Position or UDim2.fromScale(0.5, 0.5)) or UDim2.fromScale(0.5, 1.35),
@@ -2040,7 +2031,7 @@ function Library:CreateWindow(config)
 	end
 
 	function window:Destroy()
-		restoreMouse()
+		setMouseUnlocked(false)
 		gui:Destroy()
 	end
 
